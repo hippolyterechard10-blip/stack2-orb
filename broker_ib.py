@@ -125,20 +125,43 @@ class IBBroker:
         return {"dry_run": False, "fill": fill, "action": action, "trade": trade}
 
     def place_bracket(self, symbol, qty, direction, stop, target):
-        """Entrée market + SL + TP (OCA). DRY_RUN log seulement."""
+        """Entrée market + SL + TP (OCA). Retourne les Trade objects pour lire les VRAIS fills."""
         action = "BUY" if direction > 0 else "SELL"
         px = self.last_price(symbol)
         if config.DRY_RUN:
             log.info("[DRY_RUN] BRACKET %s %s x%s entry@~%s SL=%s TP=%s",
                      action, symbol, qty, px, stop, target)
-            return {"dry_run": True, "fill": px}
-        bracket = self.ib.bracketOrder(action, qty, limitPrice=px,
-                                       takeProfitPrice=target, stopLossPrice=stop)
-        for o in bracket:
-            self.ib.placeOrder(self.front(symbol), o)
+            return {"dry_run": True, "entry_fill": px, "tp_trade": None, "sl_trade": None}
+        orders = self.ib.bracketOrder(action, qty, limitPrice=px,
+                                      takeProfitPrice=target, stopLossPrice=stop)
+        trades = [self.ib.placeOrder(self.front(symbol), o) for o in orders]
         self.ib.sleep(1)
-        log.info("BRACKET %s %s x%s SL=%s TP=%s placé", action, symbol, qty, stop, target)
-        return {"dry_run": False, "fill": px, "bracket": bracket}
+        entry_fill = trades[0].orderStatus.avgFillPrice or px
+        log.info("BRACKET %s %s x%s entry@%s SL=%s TP=%s placé", action, symbol, qty, entry_fill, stop, target)
+        # ib.bracketOrder → [parent, takeProfit, stopLoss]
+        return {"dry_run": False, "entry_fill": entry_fill,
+                "tp_trade": trades[1], "sl_trade": trades[2]}
+
+    def bracket_exit_fill(self, info):
+        """Live : si SL ou TP du bracket est rempli, retourne (fill_price, 'STOP'|'TARGET'), sinon None."""
+        for trade, reason in ((info.get("tp_trade"), "TARGET"), (info.get("sl_trade"), "STOP")):
+            if trade is not None and trade.orderStatus.status == "Filled":
+                fp = trade.orderStatus.avgFillPrice
+                if fp:
+                    return float(fp), reason
+        return None
+
+    def get_ib_realized_pnl(self):
+        """P&L réalisé cumulé IB (somme des realizedPNL des fills de la session). BUG 4."""
+        tot = 0.0
+        try:
+            for f in self.ib.fills():
+                rp = getattr(getattr(f, "commissionReport", None), "realizedPNL", None)
+                if rp not in (None, "", 0):
+                    tot += float(rp)
+        except Exception:
+            return None
+        return tot
 
     def cancel_all(self, symbol):
         if config.DRY_RUN:

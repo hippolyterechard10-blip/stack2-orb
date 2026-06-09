@@ -55,8 +55,11 @@ ON_MAX_CONTRACTS = 1
 ON_LEVERAGE_MAX = 3.0
 
 # ═══ Slippage attendu (pour comparaison live vs backtest, dashboard) ═══
-BACKTEST_SLIPPAGE_TICKS = 1.0     # 1 tick/jambe modélisé dans les backtests
+BACKTEST_SLIPPAGE_TICKS = 1.0     # 1 tick/jambe modélisé dans les backtests (appliqué en DRY_RUN)
 SLIPPAGE_ALERT_MULT = 2.0         # addendum #7 : flag rouge si slippage réel > 2× backtest
+
+# ═══ Réconciliation P&L virtuel vs IB réel (BUG 4) ═══
+RECONCILE_THRESHOLD_USD = 50.0    # écart max P&L virtuel tracké vs realizedPNL IB avant warning
 
 # ═══ Backtest expected (pour bandes de contrôle dashboard) ═══
 # Source : stack2-orb-mvp.md (ORB) + stack3-overnight-drift.md (Overnight V4)

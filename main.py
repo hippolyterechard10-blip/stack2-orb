@@ -61,13 +61,13 @@ def main():
                 orb.run_cycle(now)
                 overnight.run_cycle(now)
 
-            # Heartbeat (addendum #8)
+            # Heartbeat (addendum #8) + réconciliation virtuel vs IB réel (BUG 4)
             if _t.time() - last_hb >= config.HEARTBEAT_SEC:
                 q_orb, _ = broker.get_position(config.ORB_SYMBOL)
                 q_on, _ = broker.get_position(config.ON_SYMBOL)
-                logger.heartbeat(rm.virtual_equity(),
-                                 {"MNQ": q_orb, "MES": q_on},
-                                 status="HALTED" if rm.halted else "ALIVE")
+                rm.reconcile(broker.get_ib_realized_pnl())   # croise tracking vs réel IB
+                status = "HALTED" if rm.halted else ("RECONCILE_WARN" if rm.reconcile_warning else "ALIVE")
+                logger.heartbeat(rm.virtual_equity(), {"MNQ": q_orb, "MES": q_on}, status=status)
                 _write_summary(rm, orb, overnight)
                 last_hb = _t.time()
 

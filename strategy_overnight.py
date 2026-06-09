@@ -40,6 +40,8 @@ class OvernightStrategy:
         self.sym = config.ON_SYMBOL
         self.in_pos = False
         self.entry = self.stop = None
+        self.entry_theo = None         # prix de signal (pour mesurer le slippage)
+        self.stop_trade = None         # StopOrder natif (live) — lu au lieu de recalculer (BUG 3)
         self.pos_dir = 0
         self.entry_date = None
         self.evaluated_date = None     # date dont l'entrée overnight a déjà été évaluée
@@ -107,40 +109,70 @@ class OvernightStrategy:
             self._enter(1 if long_ok else -1, cur, atr, now, vix)
 
     def _enter(self, direction, price, atr, now, vix):
+        slip = config.BACKTEST_SLIPPAGE_TICKS * config.ON_TICK
         stop = price - config.ON_ATR_STOP_MULT * atr if direction > 0 \
             else price + config.ON_ATR_STOP_MULT * atr
-        self.b.place_market(self.sym, config.ON_MAX_CONTRACTS, direction)
-        # stop natif (en live) — en DRY_RUN c'est suivi en interne
+        res = self.b.place_market(self.sym, config.ON_MAX_CONTRACTS, direction)
+        entry_fill = (price + direction * slip) if config.DRY_RUN else (res.get("fill") or price)
+        # stop natif (live) — son fill sera LU au lieu de recalculer (BUG 3)
+        self.stop_trade = None
         if not config.DRY_RUN:
             from ib_insync import StopOrder
             so = StopOrder("SELL" if direction > 0 else "BUY", config.ON_MAX_CONTRACTS, stop)
-            self.b.ib.placeOrder(self.b.front(self.sym), so)
+            self.stop_trade = self.b.ib.placeOrder(self.b.front(self.sym), so)
         self.in_pos = True
-        self.entry, self.stop, self.pos_dir, self.entry_date = price, stop, direction, now.date()
-        log.info("ENTRÉE Overnight %s @%.2f SL(2×ATR)=%.2f VIX=%.1f",
-                 "LONG" if direction > 0 else "SHORT", price, stop, vix)
+        self.entry_theo = price
+        self.entry, self.stop, self.pos_dir, self.entry_date = entry_fill, stop, direction, now.date()
+        log.info("ENTRÉE Overnight %s théo@%.2f fill@%.2f SL(2×ATR)=%.2f VIX=%.1f",
+                 "LONG" if direction > 0 else "SHORT", price, entry_fill, stop, vix)
 
     def _maybe_exit(self, now):
-        # stop intraday overnight (2×ATR)
-        last = self.b.last_price(self.sym) or self.entry
-        reason = exit_px = None
-        if self.pos_dir > 0 and last <= self.stop:
-            reason, exit_px = "STOP", self.stop
-        elif self.pos_dir < 0 and last >= self.stop:
-            reason, exit_px = "STOP", self.stop
-        # exit du matin : prochain jour de marché, à l'open (9:29)
+        slip = config.BACKTEST_SLIPPAGE_TICKS * config.ON_TICK
         nxt = cal.next_trading_day(self.entry_date)
-        if reason is None and nxt is not None and now.date() >= nxt and now.time() >= dt.time(9, 29):
-            reason, exit_px = "OPEN", last
-        if reason is None:
-            return
-        self.b.place_market(self.sym, config.ON_MAX_CONTRACTS, -self.pos_dir)
-        self.b.cancel_all(self.sym)
-        pnl_pts = (exit_px - self.entry) * self.pos_dir
+        morning = nxt is not None and now.date() >= nxt and now.time() >= dt.time(9, 29)
+        reason = exit_theo = exit_fill = None
+
+        if not config.DRY_RUN:
+            # stop natif déclenché ? → lire SON fill (PAS de recalcul → évite le doublon, BUG 3)
+            if self.stop_trade is not None and self.stop_trade.orderStatus.status == "Filled":
+                exit_fill = float(self.stop_trade.orderStatus.avgFillPrice)
+                exit_theo, reason = self.stop, "STOP"
+            elif morning:
+                res = self.b.place_market(self.sym, config.ON_MAX_CONTRACTS, -self.pos_dir)
+                self.b.cancel_all(self.sym)
+                exit_fill = res.get("fill"); exit_theo = self.b.last_price(self.sym) or exit_fill
+                reason = "OPEN"
+            else:
+                return
+        else:
+            # DRY_RUN : stop checké sur high/low de la barre 1-min (BUG 3 : pas juste close)
+            bars = self.b.get_bars(self.sym, 1, 3)
+            last = float(bars["close"].iloc[-1]) if bars is not None and len(bars) else self.entry
+            hi = float(bars["high"].iloc[-1]) if bars is not None and len(bars) else last
+            lo = float(bars["low"].iloc[-1]) if bars is not None and len(bars) else last
+            if self.pos_dir > 0 and lo <= self.stop:
+                reason, exit_theo = "STOP", self.stop
+            elif self.pos_dir < 0 and hi >= self.stop:
+                reason, exit_theo = "STOP", self.stop
+            elif morning:
+                reason, exit_theo = "OPEN", last
+                self.b.place_market(self.sym, config.ON_MAX_CONTRACTS, -self.pos_dir)
+                self.b.cancel_all(self.sym)
+            if reason is None:
+                return
+            exit_fill = exit_theo - self.pos_dir * slip
+
+        pnl_pts = (exit_fill - self.entry) * self.pos_dir
         pnl_usd = pnl_pts * config.ON_POINT_VALUE
         self.rm.record_realized(pnl_usd, sleeve="OVERNIGHT")
-        logger.log_trade("OVERNIGHT", self.sym, self.pos_dir, self.entry, exit_px, reason,
-                         config.ON_POINT_VALUE, self.rm.virtual_equity(), tick=config.ON_TICK)
+        if config.DRY_RUN:
+            obs = config.BACKTEST_SLIPPAGE_TICKS
+        else:
+            obs = (abs(self.entry - (self.entry_theo or self.entry))
+                   + abs(exit_fill - (exit_theo or exit_fill))) / (2 * config.ON_TICK)
+        logger.log_trade("OVERNIGHT", self.sym, self.pos_dir, self.entry, exit_fill, reason,
+                         config.ON_POINT_VALUE, self.rm.virtual_equity(),
+                         observed_slippage_ticks=round(obs, 2), tick=config.ON_TICK)
         self.in_pos = False
 
     def state(self):

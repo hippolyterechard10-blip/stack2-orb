@@ -35,6 +35,8 @@ class ORBStrategy:
         self.breakout_evaluated = False
         self.in_pos = False
         self.entry = self.stop = self.target = None
+        self.entry_theo = None         # prix de signal (pour mesurer le slippage)
+        self.bracket = None            # résultat place_bracket (Trade objects en live)
         self.pos_dir = 0
         self.done = False
 
@@ -128,39 +130,69 @@ class ORBStrategy:
 
     def _enter(self, direction, now):
         px = self.b.last_price(self.sym)
+        slip = config.BACKTEST_SLIPPAGE_TICKS * config.ORB_TICK
         if direction > 0:
             stop, target = self.or_low, self.or_high + self.or_width
         else:
             stop, target = self.or_high, self.or_low - self.or_width
-        self.b.place_bracket(self.sym, config.ORB_MAX_CONTRACTS, direction, stop, target)
+        self.bracket = self.b.place_bracket(self.sym, config.ORB_MAX_CONTRACTS, direction, stop, target)
+        # fill d'entrée : RÉEL en live (avgFillPrice), théorique +1 tick adverse en DRY_RUN (BUG 2)
+        entry_fill = (px + direction * slip) if config.DRY_RUN else self.bracket.get("entry_fill", px)
         self.in_pos = True
-        self.entry, self.stop, self.target, self.pos_dir = px, stop, target, direction
-        log.info("ENTRÉE ORB %s @%.2f SL=%.2f TP=%.2f",
-                 "LONG" if direction > 0 else "SHORT", px, stop, target)
+        self.entry_theo = px
+        self.entry, self.stop, self.target, self.pos_dir = entry_fill, stop, target, direction
+        log.info("ENTRÉE ORB %s théo@%.2f fill@%.2f SL=%.2f TP=%.2f",
+                 "LONG" if direction > 0 else "SHORT", px, entry_fill, stop, target)
 
     def _manage_position(self, now, eod):
-        bars = self.b.get_bars(self.sym, 1, 3)
-        last = float(bars["close"].iloc[-1]) if bars is not None and len(bars) else self.entry
-        hi = float(bars["high"].iloc[-1]) if bars is not None and len(bars) else last
-        lo = float(bars["low"].iloc[-1]) if bars is not None and len(bars) else last
-        reason = exit_px = None
-        if self.pos_dir > 0:
-            if lo <= self.stop: reason, exit_px = "STOP", self.stop
-            elif hi >= self.target: reason, exit_px = "TARGET", self.target
+        slip = config.BACKTEST_SLIPPAGE_TICKS * config.ORB_TICK
+        reason = exit_theo = exit_fill = None
+
+        if not config.DRY_RUN:
+            # LIVE : le bracket IB exécute SL/TP côté broker → lire le VRAI fill (BUG 1)
+            ex = self.b.bracket_exit_fill(self.bracket)
+            if ex is not None:
+                exit_fill, reason = ex
+                exit_theo = self.target if reason == "TARGET" else self.stop
+            elif now.time() >= eod:
+                res = self.b.place_market(self.sym, config.ORB_MAX_CONTRACTS, -self.pos_dir)
+                self.b.cancel_all(self.sym)
+                exit_fill = res.get("fill"); exit_theo = self.b.last_price(self.sym) or exit_fill
+                reason = "EOD"
+            else:
+                return  # bracket pas encore touché, toujours en position
         else:
-            if hi >= self.stop: reason, exit_px = "STOP", self.stop
-            elif lo <= self.target: reason, exit_px = "TARGET", self.target
-        if reason is None and now.time() >= eod:
-            reason, exit_px = "EOD", last
-            self.b.place_market(self.sym, config.ORB_MAX_CONTRACTS, -self.pos_dir)
-            self.b.cancel_all(self.sym)
-        if reason is None:
-            return
-        pnl_pts = (exit_px - self.entry) * self.pos_dir
+            # DRY_RUN : intrabar high/low de la barre 1-min + 1 tick de slippage (BUG 2)
+            bars = self.b.get_bars(self.sym, 1, 3)
+            last = float(bars["close"].iloc[-1]) if bars is not None and len(bars) else self.entry
+            hi = float(bars["high"].iloc[-1]) if bars is not None and len(bars) else last
+            lo = float(bars["low"].iloc[-1]) if bars is not None and len(bars) else last
+            if self.pos_dir > 0:
+                if lo <= self.stop: reason, exit_theo = "STOP", self.stop
+                elif hi >= self.target: reason, exit_theo = "TARGET", self.target
+            else:
+                if hi >= self.stop: reason, exit_theo = "STOP", self.stop
+                elif lo <= self.target: reason, exit_theo = "TARGET", self.target
+            if reason is None and now.time() >= eod:
+                reason, exit_theo = "EOD", last
+                self.b.place_market(self.sym, config.ORB_MAX_CONTRACTS, -self.pos_dir)
+                self.b.cancel_all(self.sym)
+            if reason is None:
+                return
+            exit_fill = exit_theo - self.pos_dir * slip   # 1 tick adverse
+
+        # P&L sur les FILLS (réels en live ; théo+slippage en dry-run)
+        pnl_pts = (exit_fill - self.entry) * self.pos_dir
         pnl_usd = pnl_pts * config.ORB_POINT_VALUE
         self.rm.record_realized(pnl_usd, sleeve="ORB")
-        logger.log_trade("ORB", self.sym, self.pos_dir, self.entry, exit_px, reason,
-                         config.ORB_POINT_VALUE, self.rm.virtual_equity(), tick=config.ORB_TICK)
+        if config.DRY_RUN:
+            obs = config.BACKTEST_SLIPPAGE_TICKS
+        else:
+            obs = (abs(self.entry - (self.entry_theo or self.entry))
+                   + abs(exit_fill - (exit_theo or exit_fill))) / (2 * config.ORB_TICK)
+        logger.log_trade("ORB", self.sym, self.pos_dir, self.entry, exit_fill, reason,
+                         config.ORB_POINT_VALUE, self.rm.virtual_equity(),
+                         observed_slippage_ticks=round(obs, 2), tick=config.ORB_TICK)
         self.in_pos = False
         self.done = True
 

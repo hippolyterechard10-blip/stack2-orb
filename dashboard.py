@@ -26,7 +26,9 @@ def _metrics():
     out = {"dry_run": config.DRY_RUN, "halted": rm.halted if rm else None,
            "halt_reason": rm.halt_reason if rm else None,
            "virtual_equity": rm.virtual_equity() if rm else config.CAPITAL_BASE,
-           "capital_base": config.CAPITAL_BASE}
+           "capital_base": config.CAPITAL_BASE,
+           "reconcile_warning": rm.reconcile_warning if rm else False,
+           "reconcile_diff": round(rm.reconcile_diff, 2) if rm else 0.0}
     if len(df):
         df["ts"] = pd.to_datetime(df["timestamp"])
         now = dt.datetime.now()
@@ -88,6 +90,8 @@ def index():
     slip_warn = ""
     if m.get("slippage_alerts", 0):
         slip_warn = f"<div style='background:#c00;color:#fff;padding:8px'>⚠️ {m['slippage_alerts']} trade(s) slippage > 2× backtest</div>"
+    if m.get("reconcile_warning"):
+        slip_warn += f"<div style='background:#c00;color:#fff;padding:8px'>⚠️ RÉCONCILIATION : écart P&L virtuel vs IB réel = ${m.get('reconcile_diff')}</div>"
     html = f"""<html><head><title>Stack2/3 Bot</title><meta http-equiv=refresh content=15>
     <style>body{{font-family:monospace;margin:20px}}table{{border-collapse:collapse}}td{{border:1px solid #ccc;padding:4px 8px}}</style></head>
     <body>{banner}{slip_warn}

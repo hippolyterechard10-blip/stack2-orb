@@ -25,6 +25,9 @@ class RiskManager:
         # P&L réalisé PAR SLEEVE au début du jour (pour daily stops par sleeve)
         self.day_start_by_sleeve = {"ORB": 0.0, "OVERNIGHT": 0.0}
         self.realized_by_sleeve = {"ORB": 0.0, "OVERNIGHT": 0.0}
+        # Réconciliation virtuel vs IB réel (BUG 4)
+        self.reconcile_warning = False
+        self.reconcile_diff = 0.0
 
     # ── Equity virtuelle ─────────────────────────────────────────────────────
     def virtual_equity(self):
@@ -84,9 +87,25 @@ class RiskManager:
             return False
         return True
 
+    def reconcile(self, ib_realized_pnl):
+        """BUG 4 : croiser le P&L réalisé tracké (virtuel) avec le realizedPNL réel IB.
+        Tous deux sont le vrai $ d'1 micro → doivent coïncider. Écart > seuil = bug de tracking."""
+        if ib_realized_pnl is None:
+            return  # indispo (DRY_RUN ou pas de fills)
+        self.reconcile_diff = self.realized_pnl - ib_realized_pnl
+        if abs(self.reconcile_diff) > config.RECONCILE_THRESHOLD_USD:
+            self.reconcile_warning = True
+            log.warning("⚠️ RÉCONCILIATION : P&L virtuel $%.2f vs IB réel $%.2f — écart $%.2f > seuil $%s",
+                        self.realized_pnl, ib_realized_pnl, self.reconcile_diff,
+                        config.RECONCILE_THRESHOLD_USD)
+        else:
+            self.reconcile_warning = False
+
     def status(self):
         return {"virtual_equity": round(self.virtual_equity(), 2),
                 "realized_pnl": round(self.realized_pnl, 2),
                 "daily_pnl": round(self.daily_pnl(), 2),
                 "halted": self.halted, "halt_reason": self.halt_reason,
+                "reconcile_warning": self.reconcile_warning,
+                "reconcile_diff": round(self.reconcile_diff, 2),
                 "mdd_kill_at": config.KILL_EQUITY}
