@@ -1,5 +1,6 @@
 """
-Couche broker Interactive Brokers via ib_insync. Paper port 4002, account DUQ700122.
+Couche broker Interactive Brokers via ib_insync. Paper port 4002.
+Le numéro de compte est lu depuis ~/.openclaw/secrets/ib_demo.json (jamais en dur ici).
 Supporte DRY_RUN (log sans ordre réel). Reconnexion auto. Contrats front-month MNQ/MES.
 
 ⚠️ Historique : data continue via ContFuture ; ORDRES via le contrat front-month réel
@@ -20,6 +21,7 @@ class IBBroker:
         self._front = {}        # symbol -> Future (front-month tradeable)
         self._cont = {}         # symbol -> ContFuture (historique continu)
         self._last_connect_ok = None
+        self.account = None     # rempli depuis ib_demo.json à la connexion
 
     # ── Connexion ────────────────────────────────────────────────────────────
     def _secrets(self):
@@ -33,10 +35,11 @@ class IBBroker:
         s = self._secrets()
         host = s.get("host", config.IB_HOST)
         port = int(s.get("port", config.IB_PORT))
+        self.account = s.get("account") or config.IB_ACCOUNT   # depuis secrets, hors repo
         self.ib.connect(host, port, clientId=config.IB_CLIENT_ID, timeout=15)
         self._last_connect_ok = time.time()
         log.info("✅ IB connecté %s:%s account=%s serverVersion=%s",
-                 host, port, config.IB_ACCOUNT, self.ib.client.serverVersion())
+                 host, port, self.account, self.ib.client.serverVersion())
         # qualifier les contrats
         for sym in (config.ORB_SYMBOL, config.ON_SYMBOL):
             self._resolve_contracts(sym)
@@ -147,7 +150,7 @@ class IBBroker:
 
     def get_position(self, symbol):
         """Retourne (qty signé, avgCost) ou (0, 0) si flat."""
-        for p in self.ib.positions(account=config.IB_ACCOUNT):
+        for p in self.ib.positions(account=self.account):
             if p.contract.symbol == symbol:
                 return int(p.position), float(p.avgCost)
         return 0, 0.0
@@ -155,7 +158,7 @@ class IBBroker:
     def get_equity(self):
         """Equity TOTALE du compte paper IB (NetLiquidation). Le risk_manager la convertit
         en equity virtuelle base $10k via le P&L réalisé."""
-        for v in self.ib.accountValues(account=config.IB_ACCOUNT):
+        for v in self.ib.accountValues(account=self.account):
             if v.tag == "NetLiquidation" and v.currency == "USD":
                 return float(v.value)
         return None

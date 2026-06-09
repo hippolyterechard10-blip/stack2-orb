@@ -35,7 +35,7 @@ Double-stratégie futures micro sur Interactive Brokers paper, pool unique.
 
 ## Prérequis avant lancement
 1. Phase C (re-run ORB sur CME réel via IB) doit PASS.
-2. IB Gateway loggé (port 4002 paper, account DUQ700122) — cf. `IB_SETUP.md`.
+2. IB Gateway loggé (port 4002 paper ; numéro de compte dans `~/.openclaw/secrets/ib_demo.json`) — cf. `IB_SETUP.md`.
 3. Lancer en `DRY_RUN=True` 1-2 jours, puis paper réel.
 
 Secrets (`ib_demo.json`) dans `~/.openclaw/secrets/` — **hors repo** (gitignored).

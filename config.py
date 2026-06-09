@@ -12,7 +12,7 @@ DRY_RUN = True            # addendum #6 : True = log signaux/décisions SANS ord
 IB_HOST = "127.0.0.1"
 IB_PORT = 4002            # Gateway paper
 IB_CLIENT_ID = 21
-IB_ACCOUNT = "DUQ700122"
+IB_ACCOUNT = None         # lu depuis ib_demo.json (hors repo) — jamais en dur dans le code
 IB_SECRETS = "~/.openclaw/secrets/ib_demo.json"
 IB_RECONNECT_RETRY_SEC = 30
 IB_RECONNECT_TIMEOUT_SEC = 300   # 5 min sans reco → halt
