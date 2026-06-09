@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.hippo.stack2orb</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/Users/hippolyterechard/.openclaw/workspace/stack2-orb/run.sh</string>
+  </array>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <dict>
+    <key>SuccessfulExit</key>
+    <false/>
+  </dict>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/hippolyterechard/.openclaw/workspace/stack2-orb</string>
+
+  <key>StandardOutPath</key>
+  <string>/Users/hippolyterechard/Documents/AI-OS/Logs/stack2-orb.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/hippolyterechard/Documents/AI-OS/Logs/stack2-orb.err.log</string>
+</dict>
+</plist>

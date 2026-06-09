@@ -1,0 +1,92 @@
+"""
+Risk manager — pool unique $10k virtuel, kill switches globaux (les 2 sleeves partagent).
+P&L virtuel tracké sur base $10k via le P&L réalisé cumulé (PAS le solde IB Demo $1M).
+
+Kill switches :
+  - equity virtuelle < KILL_EQUITY ($8000, MDD -20%) → arrêt TOTAL des 2 sleeves (halt)
+  - perte virtuelle du jour < -DAILY_LOSS_MAX (-$400, -4%) → plus aucun nouveau trade ce jour
+Assertion anti-double-position (addendum #4) : halt si MNQ ET MES ouverts simultanément.
+"""
+import datetime as dt
+import logging
+import config
+import logger
+
+log = logging.getLogger("risk")
+
+
+class RiskManager:
+    def __init__(self, broker):
+        self.broker = broker
+        self.realized_pnl = 0.0          # P&L réalisé cumulé total (virtuel, $)
+        self.current_day = dt.date.today()
+        self.halted = False              # kill switch global déclenché
+        self.halt_reason = None
+        # P&L réalisé PAR SLEEVE au début du jour (pour daily stops par sleeve)
+        self.day_start_by_sleeve = {"ORB": 0.0, "OVERNIGHT": 0.0}
+        self.realized_by_sleeve = {"ORB": 0.0, "OVERNIGHT": 0.0}
+
+    # ── Equity virtuelle ─────────────────────────────────────────────────────
+    def virtual_equity(self):
+        return config.CAPITAL_BASE + self.realized_pnl
+
+    def record_realized(self, pnl_dollars, sleeve="ORB"):
+        self.realized_pnl += pnl_dollars
+        key = "OVERNIGHT" if str(sleeve).upper().startswith("OVER") else "ORB"
+        self.realized_by_sleeve[key] = self.realized_by_sleeve.get(key, 0.0) + pnl_dollars
+
+    def _roll_day(self):
+        today = dt.date.today()
+        if today != self.current_day:
+            self.current_day = today
+            self.day_start_by_sleeve = dict(self.realized_by_sleeve)
+
+    def daily_pnl(self):
+        return sum(self.realized_by_sleeve.values()) - sum(self.day_start_by_sleeve.values())
+
+    def sleeve_daily_pnl(self, sleeve):
+        key = "OVERNIGHT" if str(sleeve).upper().startswith("OVER") else "ORB"
+        return self.realized_by_sleeve.get(key, 0.0) - self.day_start_by_sleeve.get(key, 0.0)
+
+    # ── Anti double-position (addendum #4) ──────────────────────────────────
+    def assert_no_double_position(self):
+        q_orb, _ = self.broker.get_position(config.ORB_SYMBOL)
+        q_on, _ = self.broker.get_position(config.ON_SYMBOL)
+        if q_orb != 0 and q_on != 0:
+            self.halted = True
+            self.halt_reason = (f"DOUBLE POSITION détectée : {config.ORB_SYMBOL}={q_orb} "
+                                f"ET {config.ON_SYMBOL}={q_on} — HALT immédiat (double marge interdite)")
+            log.error("🛑 %s", self.halt_reason)
+            return False
+        return True
+
+    # ── Gate principal avant chaque trade ────────────────────────────────────
+    def can_trade(self, sleeve_name) -> bool:
+        self._roll_day()
+        if self.halted:
+            log.warning("HALTED (%s) — %s refusé", self.halt_reason, sleeve_name)
+            return False
+        if not self.assert_no_double_position():
+            return False
+        # Kill switch GLOBAL : -20% equity → halt total des 2 sleeves
+        eq = self.virtual_equity()
+        if eq < config.KILL_EQUITY:
+            self.halted = True
+            self.halt_reason = f"KILL SWITCH : equity virtuelle ${eq:.0f} < ${config.KILL_EQUITY}"
+            log.error("🛑 %s — arrêt total des 2 sleeves", self.halt_reason)
+            return False
+        # Daily stop PAR SLEEVE (pas global → préserve la décorrélation)
+        key = "OVERNIGHT" if str(sleeve_name).upper().startswith("OVER") else "ORB"
+        cap = config.ORB_DAILY_LOSS_MAX if key == "ORB" else config.ON_DAILY_LOSS_MAX
+        if cap is not None and self.sleeve_daily_pnl(sleeve_name) < -cap:
+            log.warning("DAILY STOP %s atteint (${:.0f} < -${}) — pas de nouveau trade %s ce jour",
+                        key, self.sleeve_daily_pnl(sleeve_name), cap, sleeve_name)
+            return False
+        return True
+
+    def status(self):
+        return {"virtual_equity": round(self.virtual_equity(), 2),
+                "realized_pnl": round(self.realized_pnl, 2),
+                "daily_pnl": round(self.daily_pnl(), 2),
+                "halted": self.halted, "halt_reason": self.halt_reason,
+                "mdd_kill_at": config.KILL_EQUITY}

@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+logs/
+data_cache/
+*.parquet
+*.log
+.DS_Store
+# jamais committer de secrets
+ib_demo.json
+*secrets*
