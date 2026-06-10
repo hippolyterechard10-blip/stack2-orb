@@ -83,3 +83,21 @@ launchctl load ~/Library/LaunchAgents/com.hippo.stack2orb.plist
 - **Détection précise du fill réel** (live, non DRY_RUN) : actuellement l'exit ORB infère TARGET/STOP via les bars 1-min ; en live le bracket IB gère réellement le SL/TP — à rapprocher des fills IB pour le P&L exact (le DRY_RUN simule fidèlement).
 - **Slippage observé** : le champ est loggé mais le calcul `observed_slippage_ticks` doit être branché sur la différence prix-signal vs prix-fill réel (trivial en live, N/A en dry-run).
 - Ces deux points se affinent pendant le dry-run sur vraies données — la logique de décision (la partie critique) est complète et testée à la compilation.
+
+---
+
+## Audit fixes — 2026-06-09 (audit code complet par Claude)
+
+Audit du repo (1080 lignes, 9 modules) : architecture saine, sécurité OK, conventions EMA correctes/différenciées, anti-double-position et séquencement étanches. 6 bugs P&L/exécution + 1 mineur, tous corrigés (bot reste DRY_RUN, non lancé).
+
+| Bug | Gravité | Fix |
+|---|---|---|
+| **1** P&L théorique vs bracket réel | 🔴 grave | `strategy_orb._manage_position` : en live, lit le VRAI fill du bracket via `broker.bracket_exit_fill()` (avgFillPrice du leg SL/TP rempli). EOD via `place_market`+fill réel. DRY_RUN : théorique ±1 tick slippage. |
+| **2** slippage jamais capturé | 🔴 grave | Stratégies calculent `observed_slippage_ticks = (|entry_fill−théo|+|exit_fill−théo|)/(2·tick)` et le passent à `log_trade`. DRY_RUN = `BACKTEST_SLIPPAGE_TICKS`. Alerte `slip_alert` vérifiée (se déclenche à >2× backtest). |
+| **3** stop overnight raté/doublon | 🟠 moyen | `_maybe_exit` : live lit le fill du `StopOrder` natif (pas de recalcul → pas de doublon). DRY_RUN : check high/low barre 1-min (pas juste close), cohérent avec ORB. |
+| **4** pas de réconciliation | 🟠 moyen | `rm.reconcile()` compare P&L tracké vs `realizedPNL` IB au heartbeat ; écart >$50 → warning + `reconciliation_drift` dans daily_summary + flag dashboard. **Skippé en DRY_RUN** (pas de fills IB). |
+| **5** P&L calculé 2× | 🟠 moyen | Source unique : `pnl_dollars_net` calculé UNE fois dans la stratégie, passé explicitement à `record_realized()` ET `log_trade()`. `log_trade` ne recalcule plus (fallback+warning si non passé). |
+| **6** frais non déduits | 🟠 moyen | `MNQ_ROUND_TRIP_FEE=1.50`, `MES_ROUND_TRIP_FEE=1.12`. `pnl_net = pnl_pts×PV − fee`. `fees_paid_total`/`fees_paid_today` dans daily_summary + dashboard /api. |
+| **7** dashboard sans auth | 🟡 doc | Commentaire sécurité en tête de `dashboard.py` : localhost-only, ajouter Flask-HTTPAuth avant toute exposition réseau. |
+
+**Vérifs** : tout compile, alerte slippage testée (1 tick→OK, 3 ticks→alerte), fees trackés, fallback BUG 5 testé, réconciliation skip DRY_RUN. **Bot toujours DRY_RUN=True, non lancé** — en attente re-relecture Claude avant clarification levier (Partie B) et re-run sizing unifié (Partie C).

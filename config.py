@@ -61,6 +61,11 @@ SLIPPAGE_ALERT_MULT = 2.0         # addendum #7 : flag rouge si slippage réel >
 # ═══ Réconciliation P&L virtuel vs IB réel (BUG 4) ═══
 RECONCILE_THRESHOLD_USD = 50.0    # écart max P&L virtuel tracké vs realizedPNL IB avant warning
 
+# ═══ Frais commission round-trip (BUG 6) — déduits du P&L NET ═══
+# Le slippage (1 tick/jambe) est appliqué dans les fills ; CES frais sont la commission RT.
+MNQ_ROUND_TRIP_FEE = 1.50         # $ commission round-trip MNQ
+MES_ROUND_TRIP_FEE = 1.12         # $ commission round-trip MES
+
 # ═══ Backtest expected (pour bandes de contrôle dashboard) ═══
 # Source : stack2-orb-mvp.md (ORB) + stack3-overnight-drift.md (Overnight V4)
 ORB_BACKTEST_OOS_MDD = -4.2       # % (MDD OOS ORB NQ_OR30_F1)

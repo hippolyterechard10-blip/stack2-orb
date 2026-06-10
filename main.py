@@ -65,7 +65,8 @@ def main():
             if _t.time() - last_hb >= config.HEARTBEAT_SEC:
                 q_orb, _ = broker.get_position(config.ORB_SYMBOL)
                 q_on, _ = broker.get_position(config.ON_SYMBOL)
-                rm.reconcile(broker.get_ib_realized_pnl())   # croise tracking vs réel IB
+                if not config.DRY_RUN:                       # BUG 4 : pas de fills IB en DRY_RUN → skip
+                    rm.reconcile(broker.get_ib_realized_pnl())
                 status = "HALTED" if rm.halted else ("RECONCILE_WARN" if rm.reconcile_warning else "ALIVE")
                 logger.heartbeat(rm.virtual_equity(), {"MNQ": q_orb, "MES": q_on}, status=status)
                 _write_summary(rm, orb, overnight)
@@ -95,6 +96,8 @@ def _write_summary(rm, orb, overnight):
     logger.write_daily_summary({
         "virtual_equity": rm.virtual_equity(), "realized_pnl": rm.realized_pnl,
         "daily_pnl": rm.daily_pnl(), "halted": rm.halted,
+        "fees_paid_total": round(rm.fees_paid, 2), "fees_paid_today": round(rm.fees_today(), 2),
+        "reconcile_warning": rm.reconcile_warning, "reconciliation_drift": round(rm.reconcile_diff, 2),
         "n_trades_orb": len(orb_tr), "n_trades_overnight": len(on_tr),
         "winrate_orb": wr(orb_tr), "winrate_overnight": wr(on_tr),
         "orb_state": orb.state(), "overnight_state": overnight.state(),

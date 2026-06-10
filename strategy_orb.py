@@ -181,17 +181,18 @@ class ORBStrategy:
                 return
             exit_fill = exit_theo - self.pos_dir * slip   # 1 tick adverse
 
-        # P&L sur les FILLS (réels en live ; théo+slippage en dry-run)
+        # P&L NET calculé UNE fois (BUG 5) : fills (slippage) − commission (BUG 6)
         pnl_pts = (exit_fill - self.entry) * self.pos_dir
-        pnl_usd = pnl_pts * config.ORB_POINT_VALUE
-        self.rm.record_realized(pnl_usd, sleeve="ORB")
+        fee = config.MNQ_ROUND_TRIP_FEE
+        pnl_usd_net = pnl_pts * config.ORB_POINT_VALUE - fee
+        self.rm.record_realized(pnl_usd_net, sleeve="ORB", fee=fee)   # source unique
         if config.DRY_RUN:
             obs = config.BACKTEST_SLIPPAGE_TICKS
         else:
             obs = (abs(self.entry - (self.entry_theo or self.entry))
                    + abs(exit_fill - (exit_theo or exit_fill))) / (2 * config.ORB_TICK)
         logger.log_trade("ORB", self.sym, self.pos_dir, self.entry, exit_fill, reason,
-                         config.ORB_POINT_VALUE, self.rm.virtual_equity(),
+                         pnl_dollars=pnl_usd_net, fees=fee, virtual_equity=self.rm.virtual_equity(),
                          observed_slippage_ticks=round(obs, 2), tick=config.ORB_TICK)
         self.in_pos = False
         self.done = True

@@ -2,7 +2,13 @@
 Dashboard Flask — localhost:5000 uniquement. Monitoring read-only du bot.
 Pages : / (status), /trades, /chart (equity vs backtest), /config.
 Métriques : equity virtuelle, P&L jour/sem/mois/total, drawdown vs backtest, n trades + winrate
-par sleeve, slippage moyen (flag rouge >2× backtest, addendum #7), corrélation ORB/Overnight 30j.
+par sleeve, slippage moyen (flag rouge >2× backtest, addendum #7), corrélation ORB/Overnight 30j,
+frais payés, drift de réconciliation.
+
+# ⚠️ SÉCURITÉ (BUG 7) : ce dashboard expose equity/positions/P&L SANS auth.
+# DASH_HOST = "127.0.0.1" → accessible uniquement depuis ce Mac (localhost).
+# Si jamais exposé hors localhost (VPS, SSH tunnel public, 0.0.0.0) :
+# AJOUTER une auth basique (Flask-HTTPAuth) AVANT toute exposition réseau.
 """
 import datetime as dt
 import json
@@ -28,7 +34,9 @@ def _metrics():
            "virtual_equity": rm.virtual_equity() if rm else config.CAPITAL_BASE,
            "capital_base": config.CAPITAL_BASE,
            "reconcile_warning": rm.reconcile_warning if rm else False,
-           "reconcile_diff": round(rm.reconcile_diff, 2) if rm else 0.0}
+           "reconciliation_drift": round(rm.reconcile_diff, 2) if rm else 0.0,
+           "fees_paid_total": round(rm.fees_paid, 2) if rm else 0.0,
+           "fees_paid_today": round(rm.fees_today(), 2) if rm else 0.0}
     if len(df):
         df["ts"] = pd.to_datetime(df["timestamp"])
         now = dt.datetime.now()

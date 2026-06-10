@@ -28,13 +28,18 @@ class RiskManager:
         # Réconciliation virtuel vs IB réel (BUG 4)
         self.reconcile_warning = False
         self.reconcile_diff = 0.0
+        # Frais cumulés (BUG 6)
+        self.fees_paid = 0.0
+        self.day_start_fees = 0.0
 
     # ── Equity virtuelle ─────────────────────────────────────────────────────
     def virtual_equity(self):
         return config.CAPITAL_BASE + self.realized_pnl
 
-    def record_realized(self, pnl_dollars, sleeve="ORB"):
+    def record_realized(self, pnl_dollars, sleeve="ORB", fee=0.0):
+        """pnl_dollars = P&L NET (déjà net de frais, calculé dans la stratégie — source unique)."""
         self.realized_pnl += pnl_dollars
+        self.fees_paid += fee
         key = "OVERNIGHT" if str(sleeve).upper().startswith("OVER") else "ORB"
         self.realized_by_sleeve[key] = self.realized_by_sleeve.get(key, 0.0) + pnl_dollars
 
@@ -43,6 +48,10 @@ class RiskManager:
         if today != self.current_day:
             self.current_day = today
             self.day_start_by_sleeve = dict(self.realized_by_sleeve)
+            self.day_start_fees = self.fees_paid
+
+    def fees_today(self):
+        return self.fees_paid - self.day_start_fees
 
     def daily_pnl(self):
         return sum(self.realized_by_sleeve.values()) - sum(self.day_start_by_sleeve.values())
@@ -108,4 +117,5 @@ class RiskManager:
                 "halted": self.halted, "halt_reason": self.halt_reason,
                 "reconcile_warning": self.reconcile_warning,
                 "reconcile_diff": round(self.reconcile_diff, 2),
+                "fees_paid": round(self.fees_paid, 2),
                 "mdd_kill_at": config.KILL_EQUITY}
