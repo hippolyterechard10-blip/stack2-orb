@@ -102,11 +102,13 @@ class IBBroker:
         return df.tail(n) if df is not None else None
 
     def get_daily_closes(self, symbol, n):
-        """n derniers closes DAILY confirmés (le jour courant non clôturé n'apparaît pas)."""
+        """n derniers closes DAILY confirmés (le jour courant non clôturé n'apparaît pas).
+        BUG C : ADJUSTED_LAST = continu BACK-ADJUSTED → pas de saut de basis aux rollovers
+        trimestriels (sinon EMA20/ATR14 faux 1-4 sem, 4×/an). Les barres intraday OR restent TRADES."""
         bars = self.ib.reqHistoricalData(
             self._cont.get(symbol) or self.front(symbol), endDateTime="",
             durationStr=f"{max(n+10, 30)} D", barSizeSetting="1 day",
-            whatToShow="TRADES", useRTH=True, formatDate=1)
+            whatToShow="ADJUSTED_LAST", useRTH=True, formatDate=1)
         df = util.df(bars)
         return df.tail(n) if df is not None else None
 
