@@ -30,6 +30,9 @@ config.LOG_DIR = tempfile.mkdtemp(prefix="replay_logs_")
 config.DAILY_SUMMARY_FILE = os.path.join(config.LOG_DIR, "ds.json")
 config.HEARTBEAT_FILE = os.path.join(config.LOG_DIR, "hb.log")
 
+import logging
+logging.disable(logging.WARNING)   # couper le flood WARNING (daily stop, etc.) en replay
+
 import logger, importlib
 importlib.reload(logger)
 import calendar_util as cal
@@ -104,8 +107,39 @@ class FakeBroker:
     def get_ib_realized_pnl(self): return None
 
 
+def _metrics(trades, cap, lo=None, hi=None):
+    ts = [t for t in trades if (lo is None or pd.Timestamp(t["timestamp"]) >= lo)
+          and (hi is None or pd.Timestamp(t["timestamp"]) < hi)]
+    if len(ts) < 5:
+        return {}
+    ts = sorted(ts, key=lambda x: x["timestamp"])
+    idx = pd.to_datetime([t["timestamp"] for t in ts])
+    pnl = pd.Series([t["pnl_dollars"] for t in ts], index=idx)
+    eq = cap + pnl.cumsum()
+    days = max((eq.index[-1] - eq.index[0]).days, 1)
+    tot = float(eq.iloc[-1] / cap - 1)
+    net_pfu = tot - max(0.0, tot) * 0.30                  # PFU 30% sur gain net positif
+    ann_gross = (1 + tot) ** (365 / days) - 1
+    ann_pfu = (1 + net_pfu) ** (365 / days) - 1
+    dd = (eq - eq.cummax()) / eq.cummax()
+    # Sharpe sur equity quotidienne
+    eqd = eq.resample("1D").last().ffill()
+    r = eqd.pct_change().dropna()
+    sh = float(r.mean() / r.std() * (252 ** 0.5)) if r.std() > 0 else 0.0
+    return {"net_total_pct": round(100 * tot, 2),
+            "net_ann_gross_pct": round(100 * ann_gross, 2),
+            "net_ann_pfu_pct": round(100 * ann_pfu, 2),
+            "mdd_pct": round(100 * float(dd.min()), 2),
+            "sharpe": round(sh, 3),
+            "pnl_$": round(float(pnl.sum()), 2), "n_trades": len(ts),
+            "final_equity_$": round(float(eq.iloc[-1]), 0)}
+
+
 def main():
     months = int(os.getenv("REPLAY_MONTHS", "6"))
+    cap = float(os.getenv("CAPITAL_BASE_REPLAY", "30000"))
+    config.CAPITAL_BASE = cap
+    config.KILL_EQUITY = cap * 0.80
     nq = load_1m("NQ"); es = load_1m("ES")
     end = nq.index[-1]
     start = end - pd.DateOffset(months=months)
@@ -125,7 +159,6 @@ def main():
     vix_map = {d.date(): float(c) for d, c in vx["Close"].dropna().items()}
     broker = FakeBroker(m1, m5, dly)
     def hist_vix(*_):   # get_vix_close prend broker en arg ; on l'ignore (VIX injecté par date)
-        # dernier VIX connu <= date courante
         d = broker.now.date()
         for off in range(0, 7):
             v = vix_map.get(d - dt.timedelta(days=off))
@@ -134,13 +167,28 @@ def main():
         return 999.0
     strategy_overnight.get_vix_close = hist_vix
 
-    rm = risk_manager.RiskManager(broker)
-    orb = strategy_orb.ORBStrategy(broker, rm)
-    on = strategy_overnight.OvernightStrategy(broker, rm)
-
     # ── Grille temporelle : chaque minute en [9:00,16:30] ET + chaque 15 min overnight ──
     grid = nq.index.union(es.index)
     grid = grid[grid >= start]
+    broker.now = grid[0]
+
+    # ── INJECTION DE L'HORLOGE SIMULÉE ───────────────────────────────────────
+    # Le bot utilise dt.datetime.now() (logger) et dt.date.today() (risk_manager._roll_day,
+    # current_day, reload_state) — heure RÉELLE, correcte en live mais fausse en replay.
+    # On patche le module `dt` de logger et risk_manager pour qu'ils lisent broker.now.
+    # (Le CODE du bot est inchangé ; seule la référence module est swappée dans le harnais.)
+    import datetime as _rdt, types as _types
+    _shim = _types.SimpleNamespace(
+        datetime=_types.SimpleNamespace(now=lambda: broker.now.replace(tzinfo=None),
+                                        fromisoformat=_rdt.datetime.fromisoformat),
+        date=_types.SimpleNamespace(today=lambda: broker.now.date()),
+        timedelta=_rdt.timedelta, time=_rdt.time)
+    logger.dt = _shim
+    risk_manager.dt = _shim
+
+    rm = risk_manager.RiskManager(broker)
+    orb = strategy_orb.ORBStrategy(broker, rm)
+    on = strategy_overnight.OvernightStrategy(broker, rm)
     n_calls = 0
     for t in grid:
         tt = t.time()
@@ -167,13 +215,24 @@ def main():
                 "win_rate": round(100*len(wins)/len(ts), 1),
                 "fees_$": round(sum(x.get("fees", 0) for x in ts), 2),
                 "avg_slip_ticks": round(np.mean([x.get("slippage_vs_backtest_ticks") or 0 for x in ts]), 2)}
+    IS_END = pd.Timestamp("2024-07-01")
+    by_year = {}
+    for y in range(2021, 2027):
+        ty = [t for t in trades if pd.Timestamp(t["timestamp"]).year == y]
+        if len(ty) >= 3:
+            by_year[str(y)] = round(sum(t["pnl_dollars"] for t in ty), 2)
     out = {
         "window": [str(start.date()), str(end.date())], "months": months,
+        "capital_base_$": cap, "kill_equity_$": cap * 0.80,
         "run_cycle_calls": n_calls,
-        "final_virtual_equity": round(rm.virtual_equity(), 2),
+        "halted": rm.halted, "halt_reason": rm.halt_reason,
         "realized_pnl_$": round(rm.realized_pnl, 2),
         "fees_paid_$": round(rm.fees_paid, 2),
-        "ORB": stats(orb_tr), "OVERNIGHT": stats(on_tr),
+        "ORB_sleeve": stats(orb_tr), "OVERNIGHT_sleeve": stats(on_tr),
+        "COMBO_full": _metrics(trades, cap),
+        "COMBO_IS_2021_2024H1": _metrics(trades, cap, hi=IS_END),
+        "COMBO_OOS_2024H2_2026": _metrics(trades, cap, lo=IS_END),
+        "pnl_by_year_$": by_year,
         "n_trades_total": len(trades),
     }
     print(json.dumps(out, indent=2, default=str))
