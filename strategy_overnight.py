@@ -138,10 +138,20 @@ class OvernightStrategy:
                 exit_fill = float(self.stop_trade.orderStatus.avgFillPrice)
                 exit_theo, reason = self.stop, "STOP"
             elif morning:
-                res = self.b.place_market(self.sym, config.ON_MAX_CONTRACTS, -self.pos_dir)
+                # BUG B : cancel D'ABORD, re-check stop fill, puis get_position = source de vérité
                 self.b.cancel_all(self.sym)
-                exit_fill = res.get("fill"); exit_theo = self.b.last_price(self.sym) or exit_fill
-                reason = "OPEN"
+                if self.stop_trade is not None and self.stop_trade.orderStatus.status == "Filled":
+                    exit_fill = float(self.stop_trade.orderStatus.avgFillPrice)
+                    exit_theo, reason = self.stop, "STOP"
+                else:
+                    qty, _ = self.b.get_position(self.sym)
+                    if qty != 0:
+                        res = self.b.place_market(self.sym, abs(qty), -1 if qty > 0 else 1)
+                        exit_fill = res.get("fill"); exit_theo = self.b.last_price(self.sym) or exit_fill
+                        reason = "OPEN"
+                    else:
+                        exit_fill = self.b.last_price(self.sym) or self.entry  # déjà flat
+                        exit_theo = exit_fill; reason = "OPEN"
             else:
                 return
         else:
