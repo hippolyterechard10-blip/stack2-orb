@@ -20,16 +20,21 @@ import config, calendar_util as cal, logger
 log = logging.getLogger("overnight")
 
 
-def get_vix_close():
-    """VIX close du jour via Yahoo ^VIX (même source que le backtest)."""
+def get_vix_close(broker):
+    """VIX close du jour via IB (Index VIX@CBOE) — zéro dépendance externe, même connexion IB.
+    Fallback : si erreur/indispo → 999.0 (skip overnight = conservateur)."""
     try:
-        import yfinance as yf
-        v = yf.download("^VIX", period="5d", interval="1d", progress=False, auto_adjust=False)
-        if hasattr(v.columns, "get_level_values"):
-            v.columns = v.columns.get_level_values(0)
-        return float(v["Close"].dropna().iloc[-1])
+        from ib_insync import Index
+        c = Index("VIX", "CBOE", "USD")
+        broker.ib.qualifyContracts(c)
+        bars = broker.ib.reqHistoricalData(c, endDateTime="", durationStr="5 D",
+                                           barSizeSetting="1 day", whatToShow="TRADES",
+                                           useRTH=True, formatDate=1)
+        if bars:
+            return float(bars[-1].close)
+        return 999.0
     except Exception as e:
-        log.warning("VIX indispo (%s) — par sécurité on considère VIX élevé (skip).", e)
+        log.warning("VIX indispo (%s) — par sécurité on considère VIX élevé (skip overnight).", e)
         return 999.0
 
 
@@ -96,7 +101,7 @@ class OvernightStrategy:
             log.warning("Overnight: indicateurs indispo, skip.")
             return
         long_ok = cur > ema
-        vix = get_vix_close()
+        vix = get_vix_close(self.b)
 
         # 3) Décision selon le mode
         if config.ON_MODE == "V4":
