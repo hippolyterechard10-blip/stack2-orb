@@ -22,6 +22,9 @@ class IBBroker:
         self._cont = {}         # symbol -> ContFuture (historique continu)
         self._last_connect_ok = None
         self.account = None     # rempli depuis ib_demo.json à la connexion
+        self._tickers = {}      # BUG D : reqMktData streaming par symbole (last_price)
+        self._bars_cache = {}   # BUG D : cache 10s des barres (symbol,tf) -> (df, ts)
+        self._no_stream = set() # symboles sans souscription temps réel → fallback historique
 
     # ── Connexion ────────────────────────────────────────────────────────────
     def _secrets(self):
@@ -88,18 +91,24 @@ class IBBroker:
 
     # ── Data ─────────────────────────────────────────────────────────────────
     def get_bars(self, symbol, tf_min, n):
-        """n dernières barres de tf_min minutes (intraday, RTH inclus). DataFrame."""
-        # durée généreuse : ×3 la fenêtre, minimum 1h, max 1 jour (sinon HMDS "no data" sur
-        # fenêtres trop courtes, surtout en 1-min). On tail(n) au retour.
+        """n dernières barres de tf_min minutes. BUG D : cache 10s (limite le pacing IB)."""
+        import time as _t
+        key = (symbol, int(tf_min))
+        c = self._bars_cache.get(key)
+        if c is not None and (_t.time() - c[1]) < 10 and len(c[0]) >= n:
+            return c[0].tail(n)
+        # durée généreuse : ×3 la fenêtre, min 1h, max 1 jour (sinon HMDS "no data" en 1-min)
         dur = min(max(int(n * tf_min * 60 * 3), 3600), 86400)
-        # IB : "1 min" (singulier) pour 1-minute, "N mins" (pluriel) pour N>1
-        bar_size = "1 min" if int(tf_min) == 1 else f"{int(tf_min)} mins"
+        bar_size = "1 min" if int(tf_min) == 1 else f"{int(tf_min)} mins"  # IB : "1 min" singulier
         bars = self.ib.reqHistoricalData(
             self._cont.get(symbol) or self.front(symbol), endDateTime="",
             durationStr=f"{dur} S", barSizeSetting=bar_size,
             whatToShow="TRADES", useRTH=False, formatDate=1)
         df = util.df(bars)
-        return df.tail(n) if df is not None else None
+        if df is not None:
+            self._bars_cache[key] = (df, _t.time())
+            return df.tail(n)
+        return None
 
     def get_daily_closes(self, symbol, n):
         """n derniers closes DAILY confirmés (le jour courant non clôturé n'apparaît pas).
@@ -113,7 +122,33 @@ class IBBroker:
         return df.tail(n) if df is not None else None
 
     def last_price(self, symbol):
-        df = self.get_bars(symbol, 1, 2)
+        """BUG D : prix via reqMktData STREAMING (pas de reqHistoricalData toutes les 10s).
+        Si pas de souscription temps réel (Error 354) → bascule définitive sur barres cachées
+        (évite le spam d'erreur). Fallback historique caché 10s dans tous les cas."""
+        import math
+        def _valid(px):
+            return px is not None and isinstance(px, (int, float)) and not math.isnan(px) and px > 0
+        if symbol not in self._no_stream:
+            try:
+                if symbol not in self._tickers:
+                    self._tickers[symbol] = self.ib.reqMktData(self.front(symbol), "", False, False)
+                    self.ib.sleep(1.5)
+                t = self._tickers[symbol]
+                cands = [t.last, t.close]
+                try: cands.insert(1, t.marketPrice())
+                except Exception: pass
+                for px in cands:
+                    if _valid(px):
+                        return float(px)
+                # ticker tout-NaN → pas de souscription temps réel : on cesse de le solliciter
+                self._no_stream.add(symbol)
+                try: self.ib.cancelMktData(self.front(symbol))
+                except Exception: pass
+                log.warning("Pas de market-data temps réel sur %s (souscription manquante) "
+                            "→ fallback barres historiques", symbol)
+            except Exception:
+                self._no_stream.add(symbol)
+        df = self.get_bars(symbol, 1, 2)   # fallback (caché 10s)
         return float(df["close"].iloc[-1]) if df is not None and len(df) else None
 
     # ── Ordres (DRY_RUN-aware) ──────────────────────────────────────────────
