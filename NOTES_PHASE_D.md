@@ -121,3 +121,19 @@ Audit du repo (1080 lignes, 9 modules) : architecture saine, sécurité OK, conv
 Le compte paper **n'a PAS de souscription market-data temps réel CME** (Error 354). Le bot fonctionne via **barres historiques** (fallback robuste), MAIS pour une exécution **ORB live précise** (le breakout exige le prix courant), il faudra **souscrire "CME Real-Time Data" (~$11/mois)** dans IB Account Management → Market Data Subscriptions. À faire **avant le live réel** (non bloquant pour le dry-run sur historique). Sans ça, l'ORB tradera sur des prix potentiellement retardés.
 
 **Bot toujours DRY_RUN=True, non lancé** — en attente relecture finale Claude. Ensuite : Phase C (re-confirmation CME) dès compte IB paper pleinement actif.
+
+---
+
+## Audit round 3 — 2026-06-11 (1 bug critique + 1 résidu)
+
+4/4 fixes round 2 validés. 1 commit/fix.
+
+| Bug | Gravité | Fix |
+|---|---|---|
+| **E** état non persistant : kill switch désarmé au restart | 🔴 **critique** | `RiskManager.reload_state()` au boot reconstruit `realized_pnl`/par sleeve/`fees`/baselines du jour depuis les trades loggés. Sans ça, un restart (launchd KeepAlive) remettait l'equity à $10k et désarmait le kill switch -20% + daily stops. Log "État rechargé" ; halt si déjà sous le seuil au boot. **Testé** (2 trades → restart → equity $10008.50 rechargée). |
+| **Résidu A** position orpheline si fill pendant le cancel | 🟠 | Après cancel des 3 ordres bracket non remplis : `ib.sleep(2)` + `get_position` ; si qty≠0 → `place_market` flatten + `log.error`. |
+| **Ajustement réconciliation** | — | Compare le P&L de la **session courante** des 2 côtés (tracked depuis le boot via `session_start_realized` vs IB realizedPNL de session), pas les cumuls → plus de faux warning après restart (IB session repart de 0). |
+
+Rappel opérationnel ajouté à `IB_SETUP.md` : **souscrire "CME Real-Time" (~$11/mois) AVANT `DRY_RUN=False`** (le compte paper n'a pas de market-data temps réel — Error 354).
+
+**Bot toujours DRY_RUN=True, non lancé.** En attente relecture round 3.
