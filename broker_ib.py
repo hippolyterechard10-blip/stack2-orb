@@ -89,10 +89,14 @@ class IBBroker:
     # ── Data ─────────────────────────────────────────────────────────────────
     def get_bars(self, symbol, tf_min, n):
         """n dernières barres de tf_min minutes (intraday, RTH inclus). DataFrame."""
-        dur = max(int(n * tf_min * 60 * 1.5), 60)
+        # durée généreuse : ×3 la fenêtre, minimum 1h, max 1 jour (sinon HMDS "no data" sur
+        # fenêtres trop courtes, surtout en 1-min). On tail(n) au retour.
+        dur = min(max(int(n * tf_min * 60 * 3), 3600), 86400)
+        # IB : "1 min" (singulier) pour 1-minute, "N mins" (pluriel) pour N>1
+        bar_size = "1 min" if int(tf_min) == 1 else f"{int(tf_min)} mins"
         bars = self.ib.reqHistoricalData(
             self._cont.get(symbol) or self.front(symbol), endDateTime="",
-            durationStr=f"{dur} S", barSizeSetting=f"{tf_min} mins",
+            durationStr=f"{dur} S", barSizeSetting=bar_size,
             whatToShow="TRADES", useRTH=False, formatDate=1)
         df = util.df(bars)
         return df.tail(n) if df is not None else None
