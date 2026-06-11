@@ -135,9 +135,15 @@ class ORBStrategy:
             stop, target = self.or_low, self.or_high + self.or_width
         else:
             stop, target = self.or_high, self.or_low - self.or_width
-        self.bracket = self.b.place_bracket(self.sym, config.ORB_MAX_CONTRACTS, direction, stop, target)
+        self.bracket = self.b.place_bracket(self.sym, config.ORB_MAX_CONTRACTS, direction,
+                                            stop, target, tick=config.ORB_TICK)
+        # BUG A : in_pos=True SEULEMENT après fill confirmé. Sinon skip le jour (pas de position fantôme).
+        if not self.bracket.get("filled"):
+            log.warning("ORB entrée NON remplie → skip le jour (in_pos reste False)")
+            self.in_pos = False; self.done = True
+            return
         # fill d'entrée : RÉEL en live (avgFillPrice), théorique +1 tick adverse en DRY_RUN (BUG 2)
-        entry_fill = (px + direction * slip) if config.DRY_RUN else self.bracket.get("entry_fill", px)
+        entry_fill = (px + direction * slip) if config.DRY_RUN else self.bracket["entry_fill"]
         self.in_pos = True
         self.entry_theo = px
         self.entry, self.stop, self.target, self.pos_dir = entry_fill, stop, target, direction

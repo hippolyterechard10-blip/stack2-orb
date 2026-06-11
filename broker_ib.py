@@ -128,22 +128,33 @@ class IBBroker:
         log.info("MARKET %s %s x%s filled @%s", action, symbol, qty, fill)
         return {"dry_run": False, "fill": fill, "action": action, "trade": trade}
 
-    def place_bracket(self, symbol, qty, direction, stop, target):
-        """Entrée market + SL + TP (OCA). Retourne les Trade objects pour lire les VRAIS fills."""
+    def place_bracket(self, symbol, qty, direction, stop, target, tick=0.25):
+        """Entrée marketable-limit + SL + TP. Confirme le fill (poll 15s) AVANT de retourner
+        filled=True. BUG A : limit au dernier prix = non-fill probable sur breakout momentum.
+        → limit = px + direction × 3 ticks (croise le spread). Si non rempli en 15s → cancel + skip."""
         action = "BUY" if direction > 0 else "SELL"
         px = self.last_price(symbol)
         if config.DRY_RUN:
             log.info("[DRY_RUN] BRACKET %s %s x%s entry@~%s SL=%s TP=%s",
                      action, symbol, qty, px, stop, target)
-            return {"dry_run": True, "entry_fill": px, "tp_trade": None, "sl_trade": None}
-        orders = self.ib.bracketOrder(action, qty, limitPrice=px,
+            return {"dry_run": True, "filled": True, "entry_fill": px, "tp_trade": None, "sl_trade": None}
+        marketable = px + direction * 3 * tick   # marketable limit (protection de prix mais fill ~immédiat)
+        orders = self.ib.bracketOrder(action, qty, limitPrice=marketable,
                                       takeProfitPrice=target, stopLossPrice=stop)
         trades = [self.ib.placeOrder(self.front(symbol), o) for o in orders]
-        self.ib.sleep(1)
-        entry_fill = trades[0].orderStatus.avgFillPrice or px
-        log.info("BRACKET %s %s x%s entry@%s SL=%s TP=%s placé", action, symbol, qty, entry_fill, stop, target)
-        # ib.bracketOrder → [parent, takeProfit, stopLoss]
-        return {"dry_run": False, "entry_fill": entry_fill,
+        filled = False; entry_fill = None
+        for _ in range(15):                       # poll fill de l'entrée (parent) jusqu'à 15s
+            self.ib.sleep(1)
+            if trades[0].orderStatus.status == "Filled":
+                filled = True; entry_fill = float(trades[0].orderStatus.avgFillPrice); break
+        if not filled:
+            log.warning("BRACKET %s %s : entrée NON remplie en 15s → cancel + skip jour", symbol, action)
+            for t in trades:
+                try: self.ib.cancelOrder(t.order)
+                except Exception: pass
+            return {"dry_run": False, "filled": False, "entry_fill": None, "tp_trade": None, "sl_trade": None}
+        log.info("BRACKET %s %s x%s entry@%s SL=%s TP=%s rempli", action, symbol, qty, entry_fill, stop, target)
+        return {"dry_run": False, "filled": True, "entry_fill": entry_fill,
                 "tp_trade": trades[1], "sl_trade": trades[2]}
 
     def bracket_exit_fill(self, info):
