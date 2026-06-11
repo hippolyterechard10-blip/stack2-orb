@@ -9,3 +9,4 @@ data_cache/
 # jamais committer de secrets
 ib_demo.json
 *secrets*
+*.out
