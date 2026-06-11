@@ -48,6 +48,10 @@ class RiskManager:
         self.day_start_by_sleeve = {"ORB": 0.0, "OVERNIGHT": 0.0}
         self.day_start_fees = 0.0
         for t in trades:
+            # ne recharger que les trades du MÊME mode (live ne reprend pas les trades DRY_RUN
+            # et inversement) — plus robuste qu'archiver logs/ au passage DRY_RUN→live
+            if bool(t.get("dry_run", False)) != bool(config.DRY_RUN):
+                continue
             sl = "OVERNIGHT" if str(t.get("sleeve", "")).upper().startswith("OVER") else "ORB"
             pnl = float(t.get("pnl_dollars", 0) or 0); fee = float(t.get("fees", 0) or 0)
             self.realized_pnl += pnl; self.fees_paid += fee
