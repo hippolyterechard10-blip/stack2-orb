@@ -101,3 +101,23 @@ Audit du repo (1080 lignes, 9 modules) : architecture saine, sécurité OK, conv
 | **7** dashboard sans auth | 🟡 doc | Commentaire sécurité en tête de `dashboard.py` : localhost-only, ajouter Flask-HTTPAuth avant toute exposition réseau. |
 
 **Vérifs** : tout compile, alerte slippage testée (1 tick→OK, 3 ticks→alerte), fees trackés, fallback BUG 5 testé, réconciliation skip DRY_RUN. **Bot toujours DRY_RUN=True, non lancé** — en attente re-relecture Claude avant clarification levier (Partie B) et re-run sizing unifié (Partie C).
+
+---
+
+## Audit round 2 — 2026-06-11 (post-fixes, 4 nouveaux bugs)
+
+7/7 fixes du round 1 validés par Claude. 4 nouveaux bugs dans le chemin d'exécution **live** (le bot était resté DRY_RUN). 1 commit/bug.
+
+| Bug | Gravité | Fix |
+|---|---|---|
+| **A** entrée bracket limit au dernier prix | 🔴 grave | `place_bracket` : marketable limit = px + dir×3 ticks, **poll fill 15s** ; si non rempli → cancel + skip jour. `in_pos=True` SEULEMENT après fill confirmé (plus de position fantôme → plus de sortie inverse nue à l'EOD). |
+| **B** race condition à la sortie | 🟠 | EOD (ORB) / matin (Overnight) : **cancel_all D'ABORD**, re-check fill des legs, puis `get_position()` = source de vérité → `place_market` seulement si qty≠0. |
+| **C** EMA/ATR pollués aux rollovers | 🟠↑ | `get_daily_closes` : `whatToShow="ADJUSTED_LAST"` (continu back-adjusted) → plus de saut de basis trimestriel. Barres intraday OR restent `TRADES`. |
+| **D** pacing IB historique | 🟠 | `last_price` via `reqMktData` streaming (fallback historique caché si pas de souscription) ; `get_bars` **cache 10s**. reqHistoricalData de fait réservé à OR build + daily. |
+
+**Validé live** (clientId dédié) : ADJUSTED_LAST OK (25 daily), last_price OK via fallback, cache get_bars OK (2e appel instantané), pas de spam d'erreur après 1er fallback.
+
+### ⚠️ DÉCOUVERTE OPÉRATIONNELLE — market data temps réel manquant
+Le compte paper **n'a PAS de souscription market-data temps réel CME** (Error 354). Le bot fonctionne via **barres historiques** (fallback robuste), MAIS pour une exécution **ORB live précise** (le breakout exige le prix courant), il faudra **souscrire "CME Real-Time Data" (~$11/mois)** dans IB Account Management → Market Data Subscriptions. À faire **avant le live réel** (non bloquant pour le dry-run sur historique). Sans ça, l'ORB tradera sur des prix potentiellement retardés.
+
+**Bot toujours DRY_RUN=True, non lancé** — en attente relecture finale Claude. Ensuite : Phase C (re-confirmation CME) dès compte IB paper pleinement actif.
