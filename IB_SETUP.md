@@ -97,3 +97,16 @@ Attendu : `✅ CONNEXION STABLE — Gateway ↔ ib_insync ↔ Zeus OK`, liste de
 ---
 
 _Une fois ces 5 étapes faites, ping Zeus : il lance `ib_connect_test.py` et valide la Phase B._
+
+---
+
+## ⚠️ AVANT de passer `DRY_RUN=False` (live paper) — souscription market-data
+
+Découvert à l'audit round 2 : le compte paper **n'a pas de market-data temps réel CME** (Error 354). Le bot fonctionne en dry-run via barres historiques, **mais l'exécution ORB live exige le prix courant** (le breakout se détecte sur le prix en temps réel).
+
+**À faire avant `DRY_RUN=False`** :
+1. IB → **Account Management** → **Market Data Subscriptions**
+2. Souscrire **"CME Real-Time (NP, L1)"** (~**$11/mois**) — couvre NQ/ES/MNQ/MES.
+3. Vérifier : relancer `research/ib_connect_test.py` ; `last_price` doit venir du **streaming** (plus de log "Pas de market-data temps réel → fallback").
+
+Sans cette souscription, le bot reste fonctionnel mais trade l'ORB sur des prix potentiellement retardés → **ne PAS passer en live tant que ce n'est pas fait**.
