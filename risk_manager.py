@@ -31,6 +31,41 @@ class RiskManager:
         # Frais cumulés (BUG 6)
         self.fees_paid = 0.0
         self.day_start_fees = 0.0
+        # BUG E : reconstruire l'état depuis les logs (kill switch ré-armé au restart)
+        self.reload_state()
+        # baseline réconciliation = état au démarrage de CETTE session (restart-safe)
+        self.session_start_realized = self.realized_pnl
+
+    def reload_state(self):
+        """BUG E : reconstruit realized_pnl / par sleeve / fees / baselines du jour depuis
+        les trades loggés. Sans ça, un restart (launchd KeepAlive) remet l'equity à $10k et
+        désarme le kill switch -20% alors que les pertes réelles persistent."""
+        import logger as _logger
+        trades = _logger.read_all_trades()
+        today = dt.date.today()
+        self.realized_pnl = 0.0; self.fees_paid = 0.0
+        self.realized_by_sleeve = {"ORB": 0.0, "OVERNIGHT": 0.0}
+        self.day_start_by_sleeve = {"ORB": 0.0, "OVERNIGHT": 0.0}
+        self.day_start_fees = 0.0
+        for t in trades:
+            sl = "OVERNIGHT" if str(t.get("sleeve", "")).upper().startswith("OVER") else "ORB"
+            pnl = float(t.get("pnl_dollars", 0) or 0); fee = float(t.get("fees", 0) or 0)
+            self.realized_pnl += pnl; self.fees_paid += fee
+            self.realized_by_sleeve[sl] += pnl
+            try:
+                tdate = dt.datetime.fromisoformat(t["timestamp"]).date()
+            except Exception:
+                tdate = today
+            if tdate < today:                       # baseline = trades AVANT aujourd'hui
+                self.day_start_by_sleeve[sl] += pnl
+                self.day_start_fees += fee
+        if trades:
+            log.info("État rechargé : equity virtuelle $%.2f, %d trades, daily P&L $%.2f, fees $%.2f",
+                     self.virtual_equity(), len(trades), self.daily_pnl(), self.fees_paid)
+            if self.virtual_equity() < config.KILL_EQUITY:   # déjà sous le seuil au boot
+                self.halted = True
+                self.halt_reason = f"KILL SWITCH (rechargé au boot) : equity ${self.virtual_equity():.0f}"
+                log.error("🛑 %s", self.halt_reason)
 
     # ── Equity virtuelle ─────────────────────────────────────────────────────
     def virtual_equity(self):
@@ -96,16 +131,19 @@ class RiskManager:
             return False
         return True
 
-    def reconcile(self, ib_realized_pnl):
-        """BUG 4 : croiser le P&L réalisé tracké (virtuel) avec le realizedPNL réel IB.
-        Tous deux sont le vrai $ d'1 micro → doivent coïncider. Écart > seuil = bug de tracking."""
-        if ib_realized_pnl is None:
+    def reconcile(self, ib_session_realized):
+        """BUG 4 + ajustement round 3 : croiser le P&L de la SESSION COURANTE des deux côtés —
+        tracked depuis le boot (realized_pnl − session_start_realized) vs IB realizedPNL de session.
+        PAS les cumuls totaux : IB session repart de 0 à chaque restart alors que le tracked est
+        cumulatif (BUG E) → comparer les cumuls donnerait un faux warning après chaque restart."""
+        if ib_session_realized is None:
             return  # indispo (DRY_RUN ou pas de fills)
-        self.reconcile_diff = self.realized_pnl - ib_realized_pnl
+        tracked_session = self.realized_pnl - self.session_start_realized
+        self.reconcile_diff = tracked_session - ib_session_realized
         if abs(self.reconcile_diff) > config.RECONCILE_THRESHOLD_USD:
             self.reconcile_warning = True
-            log.warning("⚠️ RÉCONCILIATION : P&L virtuel $%.2f vs IB réel $%.2f — écart $%.2f > seuil $%s",
-                        self.realized_pnl, ib_realized_pnl, self.reconcile_diff,
+            log.warning("⚠️ RÉCONCILIATION : P&L session tracké $%.2f vs IB session $%.2f — écart $%.2f > $%s",
+                        tracked_session, ib_session_realized, self.reconcile_diff,
                         config.RECONCILE_THRESHOLD_USD)
         else:
             self.reconcile_warning = False
