@@ -189,6 +189,13 @@ class IBBroker:
             for t in trades:
                 try: self.ib.cancelOrder(t.order)
                 except Exception: pass
+            # RÉSIDU A : un fill a pu se produire entre le dernier poll et le cancel →
+            # position orpheline non gérée. Re-checker et aplatir immédiatement.
+            self.ib.sleep(2)
+            qty, _ = self.get_position(symbol)
+            if qty != 0:
+                log.error("position ORPHELINE aplatie après cancel : %s qty=%s", symbol, qty)
+                self.place_market(symbol, abs(qty), -1 if qty > 0 else 1)
             return {"dry_run": False, "filled": False, "entry_fill": None, "tp_trade": None, "sl_trade": None}
         log.info("BRACKET %s %s x%s entry@%s SL=%s TP=%s rempli", action, symbol, qty, entry_fill, stop, target)
         return {"dry_run": False, "filled": True, "entry_fill": entry_fill,
